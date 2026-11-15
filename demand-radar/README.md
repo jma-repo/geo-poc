@@ -113,6 +113,25 @@ It needs a free account and app password.
 Each source runs independently, so one failure never stops the others. Requests are spaced (`--delay`,
 default 1 s) and retried on 429/5xx. Usernames are never stored, only a short hash.
 
+## Analysis without n8n (DeepSeek or Claude)
+
+`analyze/` runs the same steps as workflows `03` and `04` on collector output, with either model provider.
+
+```bash
+export LLM_PROVIDER=deepseek DEEPSEEK_API_KEY=...      # or LLM_PROVIDER=claude ANTHROPIC_API_KEY=...
+python3 -m analyze.pipeline signals.jsonl --out results/
+# -> results/report.md, opportunities.json, pain_points.jsonl
+```
+
+| Provider | Default model | Structured output |
+|---|---|---|
+| `deepseek` | `deepseek-flash` (`DEEPSEEK_MODEL=deepseek-v4-pro` for the larger model) | JSON mode only, so the schema goes in the prompt and every reply is validated; an invalid reply is retried once with the error |
+| `claude` | `claude-opus-5-5` (`CLAUDE_MODEL`) | Native JSON Schema structured outputs |
+
+Compared with the n8n workflows it adds one step: extraction batches name clusters independently, so the
+model merges synonymous cluster keys before aggregation and scoring. Autocomplete suggestions are folded into
+one signal per seed phrase. Scoring weights are applied in code, as in workflow `04`.
+
 ## Customizing
 
 - **Communities and phrases to watch:** the `Build Queries` node in `01`
