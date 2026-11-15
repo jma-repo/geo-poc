@@ -1,0 +1,233 @@
+{
+  "name": "01 采集 · Reddit 需求帖",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 7
+            }
+          ]
+        }
+      },
+      "id": "14ca3925-2bef-5358-a2e3-e434637d0d1e",
+      "name": "Every Day 07:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://www.reddit.com/api/v1/access_token",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "={{ $env.REDDIT_USER_AGENT || 'demand-radar/0.1' }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "grant_type",
+              "value": "client_credentials"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "d045a790-b7da-5215-b6cb-17352976f45c",
+      "name": "Reddit Token",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// 在这里维护要监听的社区和“求购”句式\nconst SUBREDDITS = ['Calgary', 'Alberta', 'PersonalFinanceCanada', 'BuyCanadian',\n                    'CampingandHiking', 'Skiing', 'dogs', 'HomeImprovement', 'BuyItForLife'];\nconst PHRASES = ['\"looking for\"', '\"recommend\"', '\"where can I buy\"', '\"wish there was\"',\n                 '\"does anyone know\"', '\"any suggestions\"', '\"best way to\"'];\nconst token = $input.first().json.access_token;\nif (!token) throw new Error('Reddit token missing: ' + JSON.stringify($input.first().json));\nconst q = PHRASES.join(' OR ');\nreturn SUBREDDITS.map(sub => ({ json: { token, sub, q } }));\n"
+      },
+      "id": "561e36ab-9945-5ec1-9a7f-b03749d06b88",
+      "name": "Build Queries",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://oauth.reddit.com/r/{{ $json.sub }}/search",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "q",
+              "value": "={{ $json.q }}"
+            },
+            {
+              "name": "restrict_sr",
+              "value": "1"
+            },
+            {
+              "name": "sort",
+              "value": "new"
+            },
+            {
+              "name": "t",
+              "value": "week"
+            },
+            {
+              "name": "limit",
+              "value": "100"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $json.token }}"
+            },
+            {
+              "name": "User-Agent",
+              "value": "={{ $env.REDDIT_USER_AGENT || 'demand-radar/0.1' }}"
+            }
+          ]
+        },
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 1100
+            }
+          }
+        }
+      },
+      "id": "017a7c24-8ccb-50ef-afbf-096039b3e46d",
+      "name": "Reddit Search",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const crypto = require('crypto');\nconst hash = s => s ? crypto.createHash('sha256').update(String(s)).digest('hex').slice(0, 16) : null;\n\nconst GEO = { calgary: 'calgary', alberta: 'alberta', personalfinancecanada: 'canada', buycanadian: 'canada' };\nconst seen = new Set();\nconst rows = [];\nfor (const item of $input.all()) {\n  for (const c of (item.json.data && item.json.data.children) || []) {\n    const d = c.data || {};\n    if (!d.id || seen.has(d.id) || d.stickied || d.over_18) continue;\n    seen.add(d.id);\n    rows.push({\n      source: 'reddit',\n      external_id: d.id,\n      url: d.permalink ? 'https://www.reddit.com' + d.permalink : null,\n      title: String(d.title || '').slice(0, 500),\n      body: String(d.selftext || '').slice(0, 8000),\n      author_hash: hash(d.author),\n      geo_hint: GEO[String(d.subreddit || '').toLowerCase()] || null,\n      posted_at: d.created_utc ? new Date(d.created_utc * 1000).toISOString() : null,\n    });\n  }\n}\nreturn [{ json: { rows, count: rows.length } }];\n"
+      },
+      "id": "9e5034ed-4a7e-539c-88aa-71ef50e25e78",
+      "name": "Normalize Posts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH ins AS (\n  INSERT INTO raw_signals (source, external_id, url, title, body, author_hash, geo_hint, posted_at)\n  SELECT r.source, r.external_id, r.url, r.title, r.body, r.author_hash, r.geo_hint, r.posted_at\n  FROM jsonb_to_recordset($1::jsonb) AS r(\n    source text, external_id text, url text, title text, body text,\n    author_hash text, geo_hint text, posted_at timestamptz)\n  ON CONFLICT (source, external_id) DO NOTHING\n  RETURNING id\n)\nSELECT count(*) AS inserted FROM ins;",
+        "options": {
+          "queryReplacement": "={{ [ JSON.stringify($json.rows) ] }}"
+        }
+      },
+      "id": "5a33890e-d7ef-56a1-8835-0a0be60d1296",
+      "name": "Insert Raw Signals",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1200,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Every Day 07:00": {
+      "main": [
+        [
+          {
+            "node": "Reddit Token",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reddit Token": {
+      "main": [
+        [
+          {
+            "node": "Build Queries",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Queries": {
+      "main": [
+        [
+          {
+            "node": "Reddit Search",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reddit Search": {
+      "main": [
+        [
+          {
+            "node": "Normalize Posts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Posts": {
+      "main": [
+        [
+          {
+            "node": "Insert Raw Signals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Edmonton"
+  },
+  "pinData": {},
+  "active": false,
+  "tags": []
+}

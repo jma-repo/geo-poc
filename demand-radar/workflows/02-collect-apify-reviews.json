@@ -1,0 +1,149 @@
+{
+  "name": "02 采集 · Apify（Amazon.ca 差评等）",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "weeks",
+              "triggerAtDay": [
+                1
+              ],
+              "triggerAtHour": 6
+            }
+          ]
+        }
+      },
+      "id": "edeeafbf-631a-5b31-ab38-61c7425ae388",
+      "name": "Every Monday 06:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// 每个 job = 一个 Apify Actor + 它的输入。Actor ID 和输入字段以 Apify 商店里该 Actor 的文档为准。\nconst JOBS = [\n  {\n    source: 'amazon_review',\n    actor: $env.APIFY_REVIEWS_ACTOR || 'REPLACE_WITH_ACTOR_ID',\n    input: {\n      productUrls: [\n        // 竞品链接：每个候选品类放 3-5 个 Amazon.ca 畅销款\n        // { url: 'https://www.amazon.ca/dp/XXXXXXXXXX' },\n      ],\n      filterByRatings: ['oneStar', 'twoStar', 'threeStar'],\n      maxReviews: 100,\n    },\n  },\n];\nreturn JOBS.filter(j => j.input.productUrls.length).map(j => ({ json: j }));\n"
+      },
+      "id": "8080e9aa-5282-5e0e-a557-b5a6f4931e7b",
+      "name": "Apify Jobs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.apify.com/v2/acts/{{ $json.actor.replace('/', '~') }}/run-sync-get-dataset-items",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.input) }}",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "id": "19ade662-283e-5709-98ec-6691856be4de",
+      "name": "Run Actor",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        300
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const crypto = require('crypto');\nconst hash = s => s ? crypto.createHash('sha256').update(String(s)).digest('hex').slice(0, 16) : null;\n\n// 不同 Actor 字段名不同，这里兼容常见写法；接新 Actor 时先看一条输出再调整\nconst jobs = $('Apify Jobs').all();\nconst rows = [];\n$input.all().forEach(item => {\n  const job = jobs[(item.pairedItem && item.pairedItem.item) || 0];\n  const source = (job && job.json.source) || 'review';\n  const r = item.json;\n  const rating = Number(r.ratingScore ?? r.rating ?? r.stars ?? 0);\n  if (rating > 3) return;\n  const id = r.reviewId || r.id || hash((r.reviewUrl || '') + (r.reviewDescription || r.text || ''));\n  rows.push({\n    source,\n    external_id: String(id),\n    url: r.reviewUrl || r.url || null,\n    title: String(r.reviewTitle || r.title || '').slice(0, 500),\n    body: String(r.reviewDescription || r.text || r.body || '').slice(0, 8000),\n    author_hash: hash(r.userId || r.reviewerName || r.author),\n    geo_hint: 'canada',\n    posted_at: r.date ? new Date(r.date).toISOString() : null,\n  });\n});\nreturn [{ json: { rows, count: rows.length } }];\n"
+      },
+      "id": "c2cbbf70-3b0d-5335-82ba-ac97638d3fd8",
+      "name": "Normalize Reviews",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH ins AS (\n  INSERT INTO raw_signals (source, external_id, url, title, body, author_hash, geo_hint, posted_at)\n  SELECT r.source, r.external_id, r.url, r.title, r.body, r.author_hash, r.geo_hint, r.posted_at\n  FROM jsonb_to_recordset($1::jsonb) AS r(\n    source text, external_id text, url text, title text, body text,\n    author_hash text, geo_hint text, posted_at timestamptz)\n  ON CONFLICT (source, external_id) DO NOTHING\n  RETURNING id\n)\nSELECT count(*) AS inserted FROM ins;",
+        "options": {
+          "queryReplacement": "={{ [ JSON.stringify($json.rows) ] }}"
+        }
+      },
+      "id": "0f579490-ce42-5a94-84c4-ce82daabe91c",
+      "name": "Insert Raw Signals",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        960,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Every Monday 06:00": {
+      "main": [
+        [
+          {
+            "node": "Apify Jobs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apify Jobs": {
+      "main": [
+        [
+          {
+            "node": "Run Actor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Actor": {
+      "main": [
+        [
+          {
+            "node": "Normalize Reviews",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Reviews": {
+      "main": [
+        [
+          {
+            "node": "Insert Raw Signals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Edmonton"
+  },
+  "pinData": {},
+  "active": false,
+  "tags": []
+}

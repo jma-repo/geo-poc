@@ -1,0 +1,85 @@
+{
+  "name": "07 护城河 · 落地页等候名单",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "waitlist",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "ff6f18b9-31b4-5f94-a700-143e5770715f",
+      "name": "POST /waitlist",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ],
+      "webhookId": "0920ed92-5b2c-5339-873e-adabb6794d14"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const crypto = require('crypto');\nconst b = $input.first().json.body || {};\nconst email = String(b.email || '').trim().toLowerCase();\nif (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email) || email.length > 254) throw new Error('invalid email');\nconst consent = b.consent === true || b.consent === 'true' || b.consent === 'on';\nreturn [{ json: {\n  opportunity_id: b.opportunity_id ? String(Number(b.opportunity_id)) : null,\n  email_hash: crypto.createHash('sha256').update(email).digest('hex'),\n  email: consent ? email : null,   // CASL：没有明示同意就只存哈希，用于计数\n  consent: String(consent),\n  source: String(b.source || 'landing').slice(0, 60),\n}}];\n"
+      },
+      "id": "edc2c8c0-0f89-57cd-bd2b-7fbbc09e4430",
+      "name": "Validate Signup",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO waitlist (opportunity_id, email_hash, email, consent, source)\nVALUES (NULLIF($1, '')::bigint, $2, NULLIF($3, ''), $4::boolean, $5)\nON CONFLICT (opportunity_id, email_hash) DO NOTHING\nRETURNING true AS ok;",
+        "options": {
+          "queryReplacement": "={{ [ $json.opportunity_id || '', $json.email_hash, $json.email || '', $json.consent, $json.source ] }}"
+        }
+      },
+      "id": "1e8818ee-e7c3-5a82-9f20-06bed1a4d4ff",
+      "name": "Insert Waitlist",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        480,
+        300
+      ],
+      "alwaysOutputData": true
+    }
+  ],
+  "connections": {
+    "POST /waitlist": {
+      "main": [
+        [
+          {
+            "node": "Validate Signup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Signup": {
+      "main": [
+        [
+          {
+            "node": "Insert Waitlist",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Edmonton"
+  },
+  "pinData": {},
+  "active": false,
+  "tags": []
+}

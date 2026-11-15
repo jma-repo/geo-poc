@@ -1,0 +1,194 @@
+{
+  "name": "05 变现 · 商家外联草稿（人工审核后发送）",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "outreach",
+        "responseMode": "lastNode",
+        "options": {},
+        "authentication": "headerAuth"
+      },
+      "id": "018acd33-f428-5ce4-b8ab-bdb2f972f15d",
+      "name": "POST /outreach",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ],
+      "webhookId": "c6e90785-5776-5e08-8d8e-acd4b4f2459c"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT o.id AS opportunity_id, o.title, o.brief_md, o.scores,\n       m.id AS merchant_id, m.name, m.kind, m.language, m.categories\nFROM opportunities o\nJOIN merchants m ON m.id IN (SELECT jsonb_array_elements_text($2::jsonb)::bigint)\nWHERE o.id = $1::bigint;",
+        "options": {
+          "queryReplacement": "={{ [ String($json.body.opportunity_id), JSON.stringify($json.body.merchant_ids || []) ] }}"
+        }
+      },
+      "id": "e4109d71-525b-5038-b8cf-758042e8a2b6",
+      "name": "Fetch Opportunity & Merchants",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const MODEL = $env.CLAUDE_MODEL || 'claude-opus-5-5';\nconst EFFORT = $env.CLAUDE_EFFORT || 'low';\n\nfunction claudeRequest(system, userText, schema, maxTokens = 16000) {\n  return {\n    model: MODEL,\n    max_tokens: maxTokens,\n    system,\n    fallbacks: 'default',\n    output_config: { effort: EFFORT, format: { type: 'json_schema', schema } },\n    messages: [{ role: 'user', content: userText }],\n  };\n}\n\nfunction parseClaude(resp) {\n  if (!resp || resp.error) throw new Error('API error: ' + JSON.stringify(resp && resp.error).slice(0, 500));\n  if (resp.stop_reason === 'refusal') throw new Error('refused: ' + JSON.stringify(resp.stop_details));\n  if (resp.stop_reason === 'max_tokens') throw new Error('output truncated at max_tokens');\n  const text = (resp.content || []).filter(b => b.type === 'text').map(b => b.text).join('');\n  return JSON.parse(text);\n}\n\nconst SYSTEM = \"You write first-contact business emails for a demand-intelligence business based in Calgary, Canada.\\nWe have validated consumer demand for a product and offer it to a manufacturer or merchant in\\nexchange for a commission on resulting sales, tracked with a dedicated discount code or link.\\n\\nWrite in the language requested (English, or Simplified Chinese for Chinese factories).\\nKeep it under 180 words. Structure: one line on who we are; the demand we found with one or two\\nconcrete numbers from the brief; what we propose (they build or stock the product, we send buyers,\\ncommission on tracked sales); one clear next step (a 15-minute call or a sample quote).\\nDo not reveal the raw source links, exact search phrases, or customer quotes in full: those are what\\nthe merchant pays for. Do not invent numbers, certifications, or past clients. No hype, no emojis.\";\nconst SCHEMA = {\"type\": \"object\", \"properties\": {\"subject\": {\"type\": \"string\"}, \"body\": {\"type\": \"string\"}}, \"required\": [\"subject\", \"body\"], \"additionalProperties\": false};\n\nreturn $input.all().map(i => i.json).filter(r => r.merchant_id).map(r => {\n  const lang = r.language === 'zh' ? 'Simplified Chinese' : 'English';\n  const user = `Language: ${lang}\nRecipient: ${r.name} (${r.kind}; categories: ${(r.categories || []).join(', ')})\nOpportunity: ${r.title}\nScores: ${JSON.stringify(r.scores)}\nBrief:\n${r.brief_md}`;\n  return { json: { opportunity_id: r.opportunity_id, merchant_id: r.merchant_id,\n                   language: r.language, request: claudeRequest(SYSTEM, user, SCHEMA, 4000) } };\n});\n"
+      },
+      "id": "ead996d1-fc1b-5aaa-beaf-a390dfebfa30",
+      "name": "Build Draft Requests",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "anthropic-version",
+              "value": "2026-10-21"
+            },
+            {
+              "name": "anthropic-beta",
+              "value": "server-side-fallback-2026-07-01"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.request) }}",
+        "options": {
+          "timeout": 600000,
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 500
+            }
+          }
+        }
+      },
+      "id": "50f44deb-74a7-5bbf-b4d0-1aeb3688ec89",
+      "name": "Claude Draft",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const MODEL = $env.CLAUDE_MODEL || 'claude-opus-5-5';\nconst EFFORT = $env.CLAUDE_EFFORT || 'low';\n\nfunction claudeRequest(system, userText, schema, maxTokens = 16000) {\n  return {\n    model: MODEL,\n    max_tokens: maxTokens,\n    system,\n    fallbacks: 'default',\n    output_config: { effort: EFFORT, format: { type: 'json_schema', schema } },\n    messages: [{ role: 'user', content: userText }],\n  };\n}\n\nfunction parseClaude(resp) {\n  if (!resp || resp.error) throw new Error('API error: ' + JSON.stringify(resp && resp.error).slice(0, 500));\n  if (resp.stop_reason === 'refusal') throw new Error('refused: ' + JSON.stringify(resp.stop_details));\n  if (resp.stop_reason === 'max_tokens') throw new Error('output truncated at max_tokens');\n  const text = (resp.content || []).filter(b => b.type === 'text').map(b => b.text).join('');\n  return JSON.parse(text);\n}\n\nconst reqs = $('Build Draft Requests').all();\nconst rows = [], errors = [];\n$input.all().forEach((item, i) => {\n  const r = reqs[i] && reqs[i].json;\n  try {\n    const d = parseClaude(item.json);\n    rows.push({ opportunity_id: r.opportunity_id, merchant_id: r.merchant_id,\n                language: r.language, subject: d.subject, body: d.body });\n  } catch (e) { errors.push({ merchant_id: r && r.merchant_id, error: String(e.message || e) }); }\n});\nreturn [{ json: { rows, errors } }];\n"
+      },
+      "id": "df5fc890-f2f8-571b-99d5-7f44e51cd8c1",
+      "name": "Parse Drafts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO outreach_drafts (opportunity_id, merchant_id, language, subject, body)\nSELECT r.opportunity_id, r.merchant_id, r.language, r.subject, r.body\nFROM jsonb_to_recordset($1::jsonb) AS r(\n  opportunity_id bigint, merchant_id bigint, language text, subject text, body text)\nRETURNING id, merchant_id, subject, status;",
+        "options": {
+          "queryReplacement": "={{ [ JSON.stringify($json.rows) ] }}"
+        }
+      },
+      "id": "fb3ee344-6974-5d50-9027-c8c30eebbada",
+      "name": "Save Drafts",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1200,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "POST /outreach": {
+      "main": [
+        [
+          {
+            "node": "Fetch Opportunity & Merchants",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Opportunity & Merchants": {
+      "main": [
+        [
+          {
+            "node": "Build Draft Requests",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Draft Requests": {
+      "main": [
+        [
+          {
+            "node": "Claude Draft",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claude Draft": {
+      "main": [
+        [
+          {
+            "node": "Parse Drafts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Drafts": {
+      "main": [
+        [
+          {
+            "node": "Save Drafts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Edmonton"
+  },
+  "pinData": {},
+  "active": false,
+  "tags": []
+}

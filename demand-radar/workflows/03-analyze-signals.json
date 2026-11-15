@@ -1,0 +1,194 @@
+{
+  "name": "03 分析 · Claude 提炼痛点",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      },
+      "id": "3ac783d1-a0c8-5635-8a05-9f7d4d4aa1f1",
+      "name": "Every 6 Hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, source, title, body, geo_hint\nFROM raw_signals\nWHERE processed = false\nORDER BY id\nLIMIT 60;",
+        "options": {}
+      },
+      "id": "62f34214-2db1-589d-8919-3b8dcb73a809",
+      "name": "Fetch Unprocessed",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const MODEL = $env.CLAUDE_MODEL || 'claude-opus-5-5';\nconst EFFORT = $env.CLAUDE_EFFORT || 'low';\n\nfunction claudeRequest(system, userText, schema, maxTokens = 16000) {\n  return {\n    model: MODEL,\n    max_tokens: maxTokens,\n    system,\n    fallbacks: 'default',\n    output_config: { effort: EFFORT, format: { type: 'json_schema', schema } },\n    messages: [{ role: 'user', content: userText }],\n  };\n}\n\nfunction parseClaude(resp) {\n  if (!resp || resp.error) throw new Error('API error: ' + JSON.stringify(resp && resp.error).slice(0, 500));\n  if (resp.stop_reason === 'refusal') throw new Error('refused: ' + JSON.stringify(resp.stop_details));\n  if (resp.stop_reason === 'max_tokens') throw new Error('output truncated at max_tokens');\n  const text = (resp.content || []).filter(b => b.type === 'text').map(b => b.text).join('');\n  return JSON.parse(text);\n}\n\nconst SYSTEM = \"You analyze consumer posts and product reviews to find unmet, purchasable product demand.\\n\\nFor each signal you receive (each has a numeric signal_id), decide whether it expresses a real\\nproduct need: a problem the person would pay a physical or digital product to solve, or an explicit\\nrequest for a recommendation or a place to buy something.\\n\\nRules:\\n- Return exactly one item per signal_id you were given, in any order.\\n- Set is_demand to false for news, jokes, politics, job posts, services that need a licensed\\n  professional, and anything that is not about buying or using a product. For those items, fill\\n  the text fields with empty strings and set intent_level to 1.\\n- cluster_key: a short lowercase English slug (2 to 4 words joined by hyphens) naming the underlying\\n  need, not a brand. Reuse the same slug for the same need, for example \\\"car-hail-protection\\\" or\\n  \\\"dog-paw-salt-protection\\\".\\n- pain: one sentence in English describing the problem in the person's terms.\\n- context: when and where it happens (season, activity, place).\\n- audience: who has this problem.\\n- quote: the most telling phrase copied verbatim from the signal, at most 200 characters. Never invent it.\\n- intent_level: 1 = vague complaint, 2 = recurring frustration, 3 = actively looking for a solution,\\n  4 = asking where to buy or for a recommendation, 5 = says they will pay or names a budget.\\n- product_hint: the kind of product that would solve it, generic and without brands.\\n- geo: the most specific place mentioned or implied (for example \\\"calgary\\\", \\\"alberta\\\", \\\"canada\\\"),\\n  or an empty string.\";\nconst SCHEMA = {\"type\": \"object\", \"properties\": {\"items\": {\"type\": \"array\", \"items\": {\"type\": \"object\", \"properties\": {\"signal_id\": {\"type\": \"integer\"}, \"is_demand\": {\"type\": \"boolean\"}, \"cluster_key\": {\"type\": \"string\"}, \"pain\": {\"type\": \"string\"}, \"context\": {\"type\": \"string\"}, \"audience\": {\"type\": \"string\"}, \"quote\": {\"type\": \"string\"}, \"intent_level\": {\"type\": \"integer\"}, \"product_hint\": {\"type\": \"string\"}, \"geo\": {\"type\": \"string\"}}, \"required\": [\"signal_id\", \"is_demand\", \"cluster_key\", \"pain\", \"context\", \"audience\", \"quote\", \"intent_level\", \"product_hint\", \"geo\"], \"additionalProperties\": false}}}, \"required\": [\"items\"], \"additionalProperties\": false};\n\nconst signals = $input.all().map(i => i.json).filter(s => s.id);\nconst CHUNK = 10;\nconst out = [];\nfor (let i = 0; i < signals.length; i += CHUNK) {\n  const chunk = signals.slice(i, i + CHUNK).map(s => ({\n    signal_id: Number(s.id), source: s.source, geo_hint: s.geo_hint,\n    title: s.title, body: String(s.body || '').slice(0, 2000),\n  }));\n  out.push({ json: {\n    signal_ids: chunk.map(s => s.signal_id),\n    request: claudeRequest(SYSTEM, 'Signals:\\n' + JSON.stringify(chunk, null, 1), SCHEMA),\n  }});\n}\nreturn out;\n"
+      },
+      "id": "55518462-edde-58da-a9f0-19c04a809e8c",
+      "name": "Build Claude Requests",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "anthropic-version",
+              "value": "2026-10-21"
+            },
+            {
+              "name": "anthropic-beta",
+              "value": "server-side-fallback-2026-07-01"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.request) }}",
+        "options": {
+          "timeout": 600000,
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 500
+            }
+          }
+        }
+      },
+      "id": "3dc79071-8ede-5b6a-88a9-1995909203e7",
+      "name": "Claude Extract",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const MODEL = $env.CLAUDE_MODEL || 'claude-opus-5-5';\nconst EFFORT = $env.CLAUDE_EFFORT || 'low';\n\nfunction claudeRequest(system, userText, schema, maxTokens = 16000) {\n  return {\n    model: MODEL,\n    max_tokens: maxTokens,\n    system,\n    fallbacks: 'default',\n    output_config: { effort: EFFORT, format: { type: 'json_schema', schema } },\n    messages: [{ role: 'user', content: userText }],\n  };\n}\n\nfunction parseClaude(resp) {\n  if (!resp || resp.error) throw new Error('API error: ' + JSON.stringify(resp && resp.error).slice(0, 500));\n  if (resp.stop_reason === 'refusal') throw new Error('refused: ' + JSON.stringify(resp.stop_details));\n  if (resp.stop_reason === 'max_tokens') throw new Error('output truncated at max_tokens');\n  const text = (resp.content || []).filter(b => b.type === 'text').map(b => b.text).join('');\n  return JSON.parse(text);\n}\n\nconst reqs = $('Build Claude Requests').all();\nconst rows = [], done = [], errors = [];\nconst clean = (s, n) => String(s || '').trim().slice(0, n);\n$input.all().forEach((item, i) => {\n  const ids = (reqs[i] && reqs[i].json.signal_ids) || [];\n  try {\n    const out = parseClaude(item.json);\n    const valid = new Set(ids);\n    for (const p of out.items || []) {\n      if (!valid.has(p.signal_id) || !p.is_demand) continue;\n      const key = clean(p.cluster_key, 60).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');\n      if (!key || !p.pain) continue;\n      rows.push({\n        signal_id: p.signal_id, cluster_key: key, pain: clean(p.pain, 500),\n        context: clean(p.context, 500), audience: clean(p.audience, 300), quote: clean(p.quote, 200),\n        intent_level: Math.min(5, Math.max(1, Math.round(Number(p.intent_level) || 1))),\n        product_hint: clean(p.product_hint, 200), geo: clean(p.geo, 60).toLowerCase(),\n      });\n    }\n    done.push(...ids);  // 只有成功解析的批次才标记为已处理，失败的下次重试\n  } catch (e) {\n    errors.push({ signal_ids: ids, error: String(e.message || e).slice(0, 500) });\n  }\n});\nreturn [{ json: { rows, done, errors } }];\n"
+      },
+      "id": "52ac8bcb-2ba1-5131-b815-e9f6f156c055",
+      "name": "Parse Pain Points",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH ins AS (\n  INSERT INTO pain_points (signal_id, cluster_key, pain, context, audience, quote,\n                           intent_level, product_hint, geo)\n  SELECT r.signal_id, r.cluster_key, r.pain, r.context, r.audience, r.quote,\n         r.intent_level, r.product_hint, r.geo\n  FROM jsonb_to_recordset($1::jsonb) AS r(\n    signal_id bigint, cluster_key text, pain text, context text, audience text,\n    quote text, intent_level smallint, product_hint text, geo text)\n  RETURNING id\n), upd AS (\n  UPDATE raw_signals SET processed = true\n  WHERE id IN (SELECT jsonb_array_elements_text($2::jsonb)::bigint)\n  RETURNING id\n)\nSELECT (SELECT count(*) FROM ins) AS pain_points_inserted,\n       (SELECT count(*) FROM upd) AS signals_processed;",
+        "options": {
+          "queryReplacement": "={{ [ JSON.stringify($json.rows), JSON.stringify($json.done) ] }}"
+        }
+      },
+      "id": "30876c11-af95-5e14-9d77-48da390eac7f",
+      "name": "Save Pain Points",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1200,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Every 6 Hours": {
+      "main": [
+        [
+          {
+            "node": "Fetch Unprocessed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Unprocessed": {
+      "main": [
+        [
+          {
+            "node": "Build Claude Requests",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Claude Requests": {
+      "main": [
+        [
+          {
+            "node": "Claude Extract",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claude Extract": {
+      "main": [
+        [
+          {
+            "node": "Parse Pain Points",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Pain Points": {
+      "main": [
+        [
+          {
+            "node": "Save Pain Points",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Edmonton"
+  },
+  "pinData": {},
+  "active": false,
+  "tags": []
+}

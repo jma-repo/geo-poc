@@ -1,0 +1,85 @@
+{
+  "name": "06 变现 · 成交回传与佣金台账",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "conversion",
+        "responseMode": "lastNode",
+        "options": {},
+        "authentication": "headerAuth"
+      },
+      "id": "c3ec48df-9941-5851-a246-3c40d84f5ed6",
+      "name": "POST /conversion",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ],
+      "webhookId": "280a3ddf-452a-5ea7-871e-ed138b91aa36"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// 兼容两种回传：自定义 JSON {merchant_id, order_id, amount, code}，\n// 或 Shopify 订单 webhook（?merchant_id=123 放在 URL 上）\nconst b = $input.first().json.body || {};\nconst q = $input.first().json.query || {};\nconst code = String(b.code || (b.discount_codes && b.discount_codes[0] && b.discount_codes[0].code) || '')\n  .trim().toUpperCase();\nconst orderId = String(b.order_id || b.id || '');\nconst amount = Number(b.amount ?? b.subtotal_price ?? b.total_price);  // 佣金按税前小计\nconst merchantId = Number(b.merchant_id || q.merchant_id);\nif (!code || !orderId || !Number.isFinite(amount) || amount < 0 || !merchantId) {\n  throw new Error('need code, order_id, amount, merchant_id');\n}\nreturn [{ json: { code, orderId, amount: amount.toFixed(2), currency: b.currency || 'CAD',\n                  merchantId: String(merchantId) } }];\n"
+      },
+      "id": "294c13b6-216f-576d-9a2a-dd8545e3b1bd",
+      "name": "Normalize Order",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH ins AS (\n  INSERT INTO conversions (code, merchant_id, order_id, order_amount, currency, commission)\n  SELECT pc.code, pc.merchant_id, $2, $3::numeric, $4, round($3::numeric * pc.commission_rate, 2)\n  FROM partner_codes pc\n  WHERE pc.code = $1 AND pc.merchant_id = $5::bigint AND pc.active\n  ON CONFLICT (merchant_id, order_id) DO NOTHING\n  RETURNING id, code, order_id, commission\n)\nSELECT coalesce((SELECT row_to_json(ins) FROM ins), '{\"recorded\": false}'::json) AS result;",
+        "options": {
+          "queryReplacement": "={{ [ $json.code, $json.orderId, $json.amount, $json.currency, $json.merchantId ] }}"
+        }
+      },
+      "id": "80cb903f-a859-5c3a-9f1c-1800bfdb0bc7",
+      "name": "Record Conversion",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        480,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "POST /conversion": {
+      "main": [
+        [
+          {
+            "node": "Normalize Order",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Order": {
+      "main": [
+        [
+          {
+            "node": "Record Conversion",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Edmonton"
+  },
+  "pinData": {},
+  "active": false,
+  "tags": []
+}

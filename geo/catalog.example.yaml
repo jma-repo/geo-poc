@@ -1,0 +1,62 @@
+# Example catalog for a fictional Calgary brand. Copy to catalog.yaml and replace everything.
+# Only put facts here that you can stand behind: every page, feed and AI-facing answer is built from this file.
+
+allow_ai_training: true
+
+brand:
+  name: Foothill Gear Co.
+  aliases: [Foothill Gear]
+  legal_name: Foothill Gear Co. Ltd.
+  site_url: https://www.foothillgear.example/
+  logo_url: https://www.foothillgear.example/logo.png
+  description: Calgary-made protective gear for vehicles and pets, designed for Prairie hail and Rocky Mountain winters.
+  city: Calgary
+  region: Alberta
+  country: CA
+  contact_email: hello@foothillgear.example
+  same_as:
+    - https://www.instagram.com/foothillgear.example
+  return_days: 30
+  ships_to: [CA]
+
+competitors:
+  # Brands you want to benchmark against. Use names exactly as people write them, plus common misspellings.
+  - name: Stormwrap
+    aliases: [Storm Wrap]
+    domain: stormwrap.example
+  - name: Northshield
+    domain: northshield.example
+
+products:
+  - id: FG-HC-01
+    name: Foothill Hail Cover for Sedans
+    slug: hail-cover-sedan
+    url: https://www.foothillgear.example/hail-cover-sedan/
+    image_url: https://www.foothillgear.example/img/hail-cover-sedan.jpg
+    summary: A padded car cover that protects sedans from golf-ball-sized hail and installs in about 3 minutes.
+    description: >
+      Four layers with a 10 mm closed-cell foam core over the hood, roof and trunk. Elastic hem and
+      underbody straps keep it on in gusts up to 80 km/h. Folds into an included trunk bag.
+    price: 189.00
+    currency: CAD
+    availability: in_stock
+    mpn: FG-HC-01
+    category: Vehicles & Parts > Vehicle Covers > Car Covers
+    use_cases:
+      - Protecting a car parked outside during Calgary hail season (June to August)
+      - Apartment and condo residents without a garage
+    specs:
+      Foam thickness: 10 mm
+      Fits vehicle length: 4.4 to 4.9 m
+      Weight: 4.2 kg
+      Install time: about 3 minutes
+      Wind rating: straps tested to 80 km/h
+    claims:
+      - text: Calgary is in one of the most hail-prone regions in Canada.
+        source_url: https://www.canada.ca/en/environment-climate-change.html
+    faqs:
+      - q: Will it stop golf-ball-sized hail?
+        a: Yes. The 10 mm foam core over the hood, roof and trunk is designed for hail up to golf-ball size. Larger hail can still cause damage.
+      - q: Does it fit an SUV?
+        a: No. It fits sedans 4.4 to 4.9 m long. An SUV version is not available yet.
+    updated: 2026-11-10
