@@ -34,6 +34,7 @@ def test_arctic_shift_pages_and_filters_locally(http):
     assert posts.calls[0].request.url.params["sort"] == "desc"
     assert posts.calls[1].request.url.params["before"] == str(1762000100)  # next page ends at oldest seen
     assert "query" not in posts.calls[0].request.url.params              # no server-side full-text search
+    assert rows[0]["url"] == "https://www.reddit.com/r/Calgary/comments/p195/"
     assert rows[2]["url"] == "https://www.reddit.com/r/Calgary/comments/p5/_/c1/"
     assert all(r["geo_hint"] == "calgary" for r in rows) and "someone" not in json.dumps(rows)
 
@@ -191,3 +192,4 @@ def test_arctic_shift_second_pass_recovers_and_requests_only_needed_fields(monke
     rows = list(sources.arctic_shift(sources.Http(delay=0), ["Calgary"], ["recommend"], 7))
     assert [r["external_id"] for r in rows] == ["p1"]
     assert posts.calls[0].request.url.params["fields"] == sources.POST_FIELDS
+    assert "permalink" not in sources.POST_FIELDS  # rejected by the API with 400

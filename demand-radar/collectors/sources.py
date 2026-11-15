@@ -82,7 +82,7 @@ def phrase_matcher(phrases: list[str]) -> re.Pattern:
     return re.compile("|".join(re.escape(p.strip('"')) for p in phrases), re.IGNORECASE)
 
 
-POST_FIELDS = "id,title,selftext,author,permalink,created_utc"
+POST_FIELDS = "id,title,selftext,author,created_utc"  # the API rejects "permalink"
 COMMENT_FIELDS = "id,body,author,link_id,created_utc"
 
 
@@ -129,7 +129,7 @@ def _arctic_pages(http: Http, base: str, sub: str, kind: str, geo, start: int, m
             if kind == "posts":
                 text = f"{d.get('title', '')}\n{d.get('selftext', '')}"
                 if match.search(text):
-                    yield row("reddit", d["id"], f"https://www.reddit.com{d.get('permalink', '')}",
+                    yield row("reddit", d["id"], f"https://www.reddit.com/r/{sub}/comments/{d['id']}/",
                               d.get("title"), d.get("selftext"), d.get("author"), geo, d.get("created_utc"))
             elif match.search(d.get("body") or ""):
                 post = str(d.get("link_id", "")).removeprefix("t3_")
