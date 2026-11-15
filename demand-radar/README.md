@@ -85,6 +85,32 @@ docker compose exec postgres psql -U radar -d radar --csv \
   -c "SELECT title, brief_md FROM opportunities ORDER BY total_score DESC LIMIT 30" > opportunities.csv
 ```
 
+## Free collectors (no n8n needed)
+
+`collectors/` is a small Python alternative to workflows `01` and `02` that uses only free sources. It writes
+the same `raw_signals` rows, so workflow `03` analyzes them unchanged.
+
+```bash
+pip install httpx pyyaml
+python3 -m collectors.run --check                     # one small request per source; shows what works
+python3 -m collectors.run --days 7 --database-url postgresql://radar:...@localhost:5432/radar
+```
+
+Edit `collectors/config.yaml` for subreddits, phrases, topics and seeds. Schedule it with cron, e.g. daily:
+`0 7 * * * cd /path/to/demand-radar && python3 -m collectors.run --days 2 --database-url ...`
+
+| Source | Collector | Cost | Key | Limits and notes |
+|---|---|---|---|---|
+| Reddit via [Arctic Shift](https://github.com/ArthurHeitmann/arctic_shift) | `arctic_shift` | Free | None | Open-source, community-run archive of public Reddit data. Best effort, may lag. Commercial use of Reddit data is subject to Reddit's terms. |
+| Hacker News via Algolia | `hn` | Free | None | About 10,000 requests per hour. Skews toward tech buyers. |
+| Stack Exchange (diy, outdoors, pets, mechanics…) | `stackexchange` | Free | Optional | 300 requests/day without a key, 10,000 with a free key from stackapps.com. Content is CC BY-SA: attribute if you republish. |
+| Google autocomplete | `autocomplete` | Free | None | Unofficial endpoint, no SLA. Shows what people type next. Keep volume low. |
+| Bluesky search | `bluesky` | Free | None | Public search may require login; if `--check` shows an error, it needs an app password (not implemented). |
+| YouTube comments | `youtube` | Free | `YOUTUBE_API_KEY` | Google Cloud project, enable YouTube Data API v3, create an API key. 10,000 units/day; a search costs 100, a comment page 1. |
+
+Each source runs independently, so one failure never stops the others. Requests are spaced (`--delay`,
+default 1 s) and retried on 429/5xx. Usernames are never stored, only a short hash.
+
 ## Customizing
 
 - **Communities and phrases to watch:** the `Build Queries` node in `01`
@@ -102,6 +128,7 @@ edit in the n8n UI and export over `workflows/*.json`, or edit the script, run
 
 ```bash
 node tests/test_code_nodes.mjs    # runs every Code node in a mocked n8n runtime and checks the wiring
+python3 -m pytest                  # collectors: parsing per source, retries, isolation; Postgres load if TEST_DATABASE_URL is set
 DATABASE_URL=postgresql://radar:pass@localhost:5432/radar python3 tests/test_sql.py
                                    # runs every SQL query against real Postgres in a temporary database
 ```
@@ -112,7 +139,8 @@ DATABASE_URL=postgresql://radar:pass@localhost:5432/radar python3 tests/test_sql
   reports a parameter error after import, reselect the option in the UI.
 - Postgres nodes pass query parameters as an array expression `{{ [ ... ] }}` so JSON containing commas is
   passed safely. If your n8n version does not accept the array form, switch to the string form.
-- Not yet run with real Claude, Reddit or Apify keys.
+- Not yet run with real Claude, Reddit or Apify keys. The free collectors have not been run against the live
+  sources either: the development environment's network blocked those hosts. Run `--check` first.
 - **Reddit's Data API requires written permission for commercial use.** Apply before scaling. Check that any
   Apify scraping complies with the target platform's terms.
 - `06` authenticates with a header secret. Native Shopify webhooks cannot add custom headers; verify

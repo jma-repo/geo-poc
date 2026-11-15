@@ -1,0 +1,25 @@
+# What the free collectors look for. Edit freely; keep volumes modest and respect each site's limits.
+
+subreddits: [Calgary, Alberta, PersonalFinanceCanada, BuyCanadian, CampingandHiking, dogs, HomeImprovement, BuyItForLife]
+
+# Phrases that signal someone wants to buy or solve something (Reddit search)
+reddit_queries:
+  - recommend
+  - "where can I buy"
+  - "looking for"
+  - "wish there was"
+
+# Topic queries for Hacker News, Stack Exchange, Bluesky and YouTube
+queries:
+  - hail damage car cover
+  - winter dog boots salt
+  - ice cleats recommendation
+  - bear spray holster
+
+stackexchange_sites: [diy, outdoors, pets, mechanics]
+
+# Google autocomplete expands each seed with a-z to show what people type next
+autocomplete_seeds:
+  - hail cover for
+  - best winter boots for
+  - calgary where to buy
