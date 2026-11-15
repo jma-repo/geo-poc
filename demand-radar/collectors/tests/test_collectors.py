@@ -39,7 +39,8 @@ def test_arctic_shift_pages_and_filters_locally(http):
 
 
 @respx.mock
-def test_arctic_shift_raises_only_when_every_subreddit_fails(http):
+def test_arctic_shift_raises_only_when_every_subreddit_fails(http, monkeypatch):
+    monkeypatch.setattr(sources.time, "sleep", lambda s: None)
     respx.get("https://arctic-shift.photon-reddit.com/api/posts/search").mock(
         return_value=httpx.Response(200, json={"data": None, "error": "Timeout. Maybe slow down a bit"}))
     with pytest.raises(RuntimeError, match="every subreddit failed.*slow down"):
@@ -140,7 +141,8 @@ def test_arctic_shift_retries_overload_and_isolates_failing_subreddit(monkeypatc
     respx.get(f"{base}/comments/search").mock(return_value=httpx.Response(200, json={"data": []}))
     rows = list(sources.arctic_shift(sources.Http(delay=0), ["Calgary", "Alberta"], ["recommend"], 7))
     assert [r["external_id"] for r in rows] == ["p1"]
-    assert "skipped r/Calgary posts" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "will retry r/Calgary posts" in err and "skipped r/Calgary posts" in err
 
 
 def test_qa_sources_use_their_own_lookback(monkeypatch):
@@ -176,3 +178,16 @@ def test_daily_writes_dated_file_and_pushes(tmp_path, monkeypatch):
     log = subprocess.run(["git", "-C", str(remote), "log", "--oneline", "main"], capture_output=True, text=True).stdout
     assert "Signals " in log and "1 rows" in log
     assert (data / "runs.log").read_text().count("ok: 1 rows") == 3  # three daily sources
+
+
+@respx.mock
+def test_arctic_shift_second_pass_recovers_and_requests_only_needed_fields(monkeypatch):
+    monkeypatch.setattr(sources.time, "sleep", lambda s: None)
+    base = "https://arctic-shift.photon-reddit.com/api"
+    post = {"data": [{"id": "p1", "title": "Can anyone recommend boots", "author": "a",
+                      "permalink": "/r/Calgary/comments/p1/x/", "created_utc": 1762000000}]}
+    posts = respx.get(f"{base}/posts/search").mock(side_effect=[httpx.Response(400), httpx.Response(200, json=post)])
+    respx.get(f"{base}/comments/search").mock(return_value=httpx.Response(200, json={"data": []}))
+    rows = list(sources.arctic_shift(sources.Http(delay=0), ["Calgary"], ["recommend"], 7))
+    assert [r["external_id"] for r in rows] == ["p1"]
+    assert posts.calls[0].request.url.params["fields"] == sources.POST_FIELDS

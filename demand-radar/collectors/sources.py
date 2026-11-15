@@ -48,27 +48,30 @@ class Http:
         self.client = client or httpx.Client(timeout=30, headers={"User-Agent": UA}, follow_redirects=True)
         self._last = 0.0
 
-    def get(self, url: str, **params):
-        for attempt in range(4):
+    def get(self, url: str, retries: int = 6, **params):
+        """GET with backoff of 5, 10, 20, 40, 60 s on 429, 5xx, transport errors and Arctic Shift overload."""
+        for attempt in range(retries):
             wait = self.delay - (time.monotonic() - self._last)
             if wait > 0:
                 time.sleep(wait)
             self._last = time.monotonic()
+            backoff = min(60, 5 * 2 ** attempt)
             try:
                 r = self.client.get(url, params=params)
-            except httpx.TransportError:  # connection reset, timeout: retry, then give up
-                if attempt == 3:
+            except httpx.TransportError:  # connection reset, read timeout
+                if attempt == retries - 1:
                     raise
-                time.sleep(2 ** (attempt + 1))
+                time.sleep(backoff)
                 continue
             overloaded = r.status_code == 422 and "timeout" in r.text.lower()  # Arctic Shift under load
             if r.status_code == 429 or r.status_code >= 500 or overloaded:
-                time.sleep(float(r.headers.get("retry-after", 2 ** (attempt + 1))))
+                if attempt < retries - 1:
+                    time.sleep(float(r.headers.get("retry-after", backoff)))
                 continue
             r.raise_for_status()
             return r.json()
         r.raise_for_status()
-        raise RuntimeError(f"gave up on {url} after retries (last status {r.status_code})")
+        raise RuntimeError(f"gave up on {url} after {retries} attempts (last status {r.status_code})")
 
 
 GEO_SUBS = {"calgary": "calgary", "alberta": "alberta", "edmonton": "alberta",
@@ -79,8 +82,12 @@ def phrase_matcher(phrases: list[str]) -> re.Pattern:
     return re.compile("|".join(re.escape(p.strip('"')) for p in phrases), re.IGNORECASE)
 
 
+POST_FIELDS = "id,title,selftext,author,permalink,created_utc"
+COMMENT_FIELDS = "id,body,author,link_id,created_utc"
+
+
 def arctic_shift(http: Http, subreddits: list[str], phrases: list[str], days: int,
-                 max_pages: int = 30) -> Iterable[dict]:
+                 max_pages: int = 30, retry_pause: float = 60) -> Iterable[dict]:
     """Reddit posts and comments via Arctic Shift, an open-source public Reddit archive. No key.
 
     Its full-text search times out under load, so this pages through each subreddit's recent posts and
@@ -90,25 +97,31 @@ def arctic_shift(http: Http, subreddits: list[str], phrases: list[str], days: in
     base = "https://arctic-shift.photon-reddit.com/api"
     match = phrase_matcher(phrases)
     start = int((datetime.now(timezone.utc) - timedelta(days=days)).timestamp())
-    failures = []
-    for sub in subreddits:
-        geo = GEO_SUBS.get(sub.lower())
-        for kind in ("posts", "comments"):
+    pending = [(sub, kind) for sub in subreddits for kind in ("posts", "comments")]
+    errors: dict[tuple[str, str], str] = {}
+    for attempt in range(2):  # the second pass retries what failed, after a pause
+        if attempt and pending:
+            time.sleep(retry_pause)
+        failed = []
+        for sub, kind in pending:
             try:
-                yield from _arctic_pages(http, base, sub, kind, geo, start, match, max_pages)
+                yield from _arctic_pages(http, base, sub, kind, GEO_SUBS.get(sub.lower()), start, match, max_pages)
             except Exception as e:  # one subreddit failing must not stop the others
-                failures.append(f"r/{sub} {kind}: {type(e).__name__}: {str(e)[:150]}")
-                print(f"arctic_shift: skipped {failures[-1]}", file=sys.stderr)
-    if failures and len(failures) == 2 * len(subreddits):
-        raise RuntimeError(f"every subreddit failed; first: {failures[0]}")
+                failed.append((sub, kind))
+                errors[(sub, kind)] = f"r/{sub} {kind}: {type(e).__name__}: {str(e)[:150]}"
+                when = "will retry" if attempt == 0 else "skipped"
+                print(f"arctic_shift: {when} {errors[(sub, kind)]}", file=sys.stderr)
+        pending = failed
+    if pending and len(pending) == 2 * len(subreddits):
+        raise RuntimeError(f"every subreddit failed; first: {errors[pending[0]]}")
 
 
 def _arctic_pages(http: Http, base: str, sub: str, kind: str, geo, start: int, match: re.Pattern,
                   max_pages: int) -> Iterable[dict]:
     before = int(datetime.now(timezone.utc).timestamp())
     for _ in range(max_pages):
-        data = http.get(f"{base}/{kind}/search", subreddit=sub, after=start, before=before,
-                        sort="desc", limit=100)
+        data = http.get(f"{base}/{kind}/search", subreddit=sub, after=start, before=before, sort="desc", limit=100,
+                        fields=POST_FIELDS if kind == "posts" else COMMENT_FIELDS)
         if data.get("error"):
             raise RuntimeError(f"arctic shift: {data['error']}")
         items = data.get("data") or []
