@@ -89,6 +89,12 @@ def test_extract_keeps_demand_in_batch_and_survives_failed_batch():
     assert errors == ["batch 2-3: RuntimeError: boom"]
 
 
+def test_merge_failure_falls_back_to_identity(capsys):
+    fake = FakeLLM(RuntimeError("DeepSeek output truncated at max_tokens"))
+    assert pipeline.merge_clusters(fake, [pain(0, "a"), pain(1, "b")]) == {"a": "a", "b": "b"}
+    assert "merge skipped" in capsys.readouterr().out
+
+
 def test_merge_aggregate_score_end_to_end():
     signals = [{"signal_id": i, "source": "reddit" if i % 2 else "stackexchange:diy", "url": f"u{i}"} for i in range(5)]
     pains = [pain(0, "car-hail-cover", 5, geo="calgary"), pain(1, "hail-protection-car", 4),

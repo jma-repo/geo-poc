@@ -74,9 +74,9 @@ class ScoredList(BaseModel):
 
 
 MERGE_SYSTEM = """You normalize product-need categories. You get category slugs with a count and an example pain.
-Map every slug to a canonical slug so that slugs describing the same purchasable need share one canonical
-slug. Do not merge different needs just because they share a word (dog boots and dog toys stay separate).
-Prefer the clearest existing slug as the canonical one. Return one entry per input slug."""
+Find slugs that describe the same purchasable need and map them to one canonical slug. Do not merge different
+needs just because they share a word (dog boots and dog toys stay separate). Use the clearest existing slug
+as the canonical one. Return entries ONLY for slugs that change; omit every slug that stays as it is."""
 
 
 # ------------------------------------------------------------------ steps
@@ -130,9 +130,13 @@ def merge_clusters(llm: LLM, pains: list[dict]) -> dict[str, str]:
     for p in pains:
         by_key[p["cluster_key"]].append(p["pain"])
     listing = "\n".join(f"{k} ({len(v)}): {v[0][:120]}" for k, v in sorted(by_key.items()))
-    out = llm.json(MERGE_SYSTEM, listing, MergeMap)
-    mapping = {m.key: re.sub(r"[^a-z0-9]+", "-", m.canonical.lower()).strip("-") for m in out.merges}
-    return {k: mapping.get(k) or k for k in by_key}  # unmapped keys stay as they are
+    try:
+        out = llm.json(MERGE_SYSTEM, listing, MergeMap, max_tokens=64000)
+    except Exception as e:  # merging improves the ranking but is not essential
+        print(f"warning: cluster merge skipped: {type(e).__name__}: {str(e)[:200]}")
+        return {k: k for k in by_key}
+    mapping = {m.key: re.sub(r"[^a-z0-9]+", "-", m.canonical.lower()).strip("-") for m in out.merges if m.key in by_key}
+    return {k: mapping.get(k) or k for k in by_key}  # keys the model left out stay as they are
 
 
 def aggregate(pains: list[dict], signals: list[dict], min_mentions: int = 2, top: int = 25) -> list[dict]:
@@ -202,6 +206,7 @@ def main(argv=None):
     ap.add_argument("--out", type=Path, default=Path("results"))
     ap.add_argument("--min-mentions", type=int, default=2)
     ap.add_argument("--workers", type=int, default=8)
+    ap.add_argument("--pains", type=Path, help="reuse a pain_points.jsonl from an earlier run instead of extracting")
     args = ap.parse_args(argv)
 
     llm = from_env()
@@ -210,16 +215,24 @@ def main(argv=None):
     tmp.write_text("".join(f.read_text(encoding="utf-8") for f in args.signals), encoding="utf-8")
     signals = load_signals(tmp)
     tmp.unlink()
-    print(f"{len(signals)} signals; extracting with {llm.name} …", flush=True)
-    pains, errors = extract(llm, signals, workers=args.workers)
-    print(f"{len(pains)} pain points ({len(errors)} failed batches)", flush=True)
+    pains_path = args.out / "pain_points.jsonl"
+    if args.pains:
+        pains, errors = [json.loads(l) for l in args.pains.read_text(encoding="utf-8").splitlines() if l.strip()], []
+        print(f"reusing {len(pains)} pain points from {args.pains}", flush=True)
+    else:
+        print(f"{len(signals)} signals; extracting with {llm.name} …", flush=True)
+        pains, errors = extract(llm, signals, workers=args.workers)
+        # checkpoint: extraction is the expensive step, keep it even if a later step fails
+        pains_path.write_text("".join(json.dumps(p, ensure_ascii=False) + "\n" for p in pains), encoding="utf-8")
+        print(f"{len(pains)} pain points ({len(errors)} failed batches) -> {pains_path}", flush=True)
     mapping = merge_clusters(llm, pains) if pains else {}
     for p in pains:
-        p["raw_cluster_key"], p["cluster_key"] = p["cluster_key"], mapping.get(p["cluster_key"], p["cluster_key"])
+        p.setdefault("raw_cluster_key", p["cluster_key"])
+        p["cluster_key"] = mapping.get(p["raw_cluster_key"], mapping.get(p["cluster_key"], p["cluster_key"]))
     print(f"{len(set(mapping))} cluster keys merged into {len(set(mapping.values()))}", flush=True)
     clusters = aggregate(pains, signals, args.min_mentions)
     opps = score(llm, clusters)
-    (args.out / "pain_points.jsonl").write_text("".join(json.dumps(p, ensure_ascii=False) + "\n" for p in pains), encoding="utf-8")
+    pains_path.write_text("".join(json.dumps(p, ensure_ascii=False) + "\n" for p in pains), encoding="utf-8")
     (args.out / "opportunities.json").write_text(json.dumps(opps, ensure_ascii=False, indent=2), encoding="utf-8")
     (args.out / "report.md").write_text(report(opps, len(signals), len(pains), len(set(mapping.values())), llm.name, errors), encoding="utf-8")
     if errors:
