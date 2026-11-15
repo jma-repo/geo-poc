@@ -54,7 +54,13 @@ class Http:
             if wait > 0:
                 time.sleep(wait)
             self._last = time.monotonic()
-            r = self.client.get(url, params=params)
+            try:
+                r = self.client.get(url, params=params)
+            except httpx.TransportError:  # connection reset, timeout: retry, then give up
+                if attempt == 3:
+                    raise
+                time.sleep(2 ** (attempt + 1))
+                continue
             overloaded = r.status_code == 422 and "timeout" in r.text.lower()  # Arctic Shift under load
             if r.status_code == 429 or r.status_code >= 500 or overloaded:
                 time.sleep(float(r.headers.get("retry-after", 2 ** (attempt + 1))))
@@ -189,7 +195,8 @@ COLLECTORS: dict[str, Callable] = {
     "arctic_shift": lambda http, cfg, days: arctic_shift(http, cfg["subreddits"], cfg["reddit_queries"], days, cfg.get("reddit_max_pages", 30)),
     # Low-volume Q&A sites: their questions stay relevant for months, so they get their own lookback.
     "hn": lambda http, cfg, days: hn(http, cfg["queries"], max(days, cfg.get("hn_days", 0))),
-    "stackexchange": lambda http, cfg, days: stackexchange(http, cfg["stackexchange_sites"], cfg["queries"],
+    "stackexchange": lambda http, cfg, days: stackexchange(http, cfg["stackexchange_sites"],
+                                                           cfg.get("stackexchange_queries", cfg["queries"]),
                                                            max(days, cfg.get("stackexchange_days", 0))),
     "autocomplete": lambda http, cfg, days: autocomplete(http, cfg["autocomplete_seeds"]),
     "youtube": lambda http, cfg, days: youtube(http, cfg["queries"], days),

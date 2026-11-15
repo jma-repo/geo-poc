@@ -150,3 +150,12 @@ def test_qa_sources_use_their_own_lookback(monkeypatch):
     cfg = {"queries": ["x"], "stackexchange_sites": ["diy"], "stackexchange_days": 365, "hn_days": 90}
     list(sources.COLLECTORS["stackexchange"](None, cfg, 7)); list(sources.COLLECTORS["hn"](None, cfg, 7))
     assert seen == {"se": 365, "hn": 90}
+
+
+@respx.mock
+def test_transport_errors_are_retried(monkeypatch):
+    monkeypatch.setattr(sources.time, "sleep", lambda s: None)
+    route = respx.get("https://hn.algolia.com/api/v1/search_by_date").mock(
+        side_effect=[httpx.ReadError("Connection reset by peer"), httpx.Response(200, json={"hits": []})])
+    assert list(sources.hn(sources.Http(delay=0), ["x"], 1)) == []
+    assert route.call_count == 2

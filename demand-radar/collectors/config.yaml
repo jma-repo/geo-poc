@@ -20,6 +20,8 @@ queries:
   - bear spray holster
 
 stackexchange_sites: [diy, outdoors, pets, mechanics]
+# Short keywords: these sites are low-volume, so multi-word phrases rarely match
+stackexchange_queries: [hail, snow, ice, winter, boots, salt, frozen]
 
 # Google autocomplete expands each seed with a-z to show what people type next
 autocomplete_seeds:
