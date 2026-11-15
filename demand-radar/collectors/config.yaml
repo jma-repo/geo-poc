@@ -26,3 +26,7 @@ autocomplete_seeds:
   - hail cover for
   - best winter boots for
   - calgary where to buy
+
+# Lookback (days) for low-volume Q&A sources; their questions stay relevant for months
+stackexchange_days: 365
+hn_days: 90

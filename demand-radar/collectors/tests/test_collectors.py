@@ -39,10 +39,10 @@ def test_arctic_shift_pages_and_filters_locally(http):
 
 
 @respx.mock
-def test_arctic_shift_error_payload_raises(http):
+def test_arctic_shift_raises_only_when_every_subreddit_fails(http):
     respx.get("https://arctic-shift.photon-reddit.com/api/posts/search").mock(
         return_value=httpx.Response(200, json={"data": None, "error": "Timeout. Maybe slow down a bit"}))
-    with pytest.raises(RuntimeError, match="slow down"):
+    with pytest.raises(RuntimeError, match="every subreddit failed.*slow down"):
         list(sources.arctic_shift(http, ["Calgary"], ["x"], 1))
 
 
@@ -125,3 +125,28 @@ def test_load_postgres_dedupes_and_handles_large_batches():
     rows = [sources.row("hackernews", i, None, "t", "x" * 8000 + "$rows$ 'quote'", "a", None, 1762000000) for i in range(1200)]
     assert run.load_postgres(rows, url) == 1200   # ~10 MB, three batches, body contains the default dollar tag
     assert run.load_postgres(rows[:10], url) == 0  # duplicates ignored
+
+
+@respx.mock
+def test_arctic_shift_retries_overload_and_isolates_failing_subreddit(monkeypatch, capsys):
+    monkeypatch.setattr(sources.time, "sleep", lambda s: None)
+    base = "https://arctic-shift.photon-reddit.com/api"
+    good = {"data": [{"id": "p1", "title": "Can anyone recommend a hail cover", "author": "a",
+                      "permalink": "/r/Alberta/comments/p1/x/", "created_utc": 1762000000}]}
+    timeout = httpx.Response(422, json={"data": None, "error": "Timeout. Maybe slow down a bit"})
+    respx.get(f"{base}/posts/search", params={"subreddit": "Calgary"}).mock(return_value=httpx.Response(400))
+    respx.get(f"{base}/posts/search", params={"subreddit": "Alberta"}).mock(
+        side_effect=[timeout, httpx.Response(200, json=good)])
+    respx.get(f"{base}/comments/search").mock(return_value=httpx.Response(200, json={"data": []}))
+    rows = list(sources.arctic_shift(sources.Http(delay=0), ["Calgary", "Alberta"], ["recommend"], 7))
+    assert [r["external_id"] for r in rows] == ["p1"]
+    assert "skipped r/Calgary posts" in capsys.readouterr().err
+
+
+def test_qa_sources_use_their_own_lookback(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(sources, "stackexchange", lambda http, sites, q, days: seen.setdefault("se", days) and [])
+    monkeypatch.setattr(sources, "hn", lambda http, q, days: seen.setdefault("hn", days) and [])
+    cfg = {"queries": ["x"], "stackexchange_sites": ["diy"], "stackexchange_days": 365, "hn_days": 90}
+    list(sources.COLLECTORS["stackexchange"](None, cfg, 7)); list(sources.COLLECTORS["hn"](None, cfg, 7))
+    assert seen == {"se": 365, "hn": 90}

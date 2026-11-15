@@ -12,6 +12,7 @@ import hashlib
 import re
 import os
 import string
+import sys
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Iterable
@@ -54,7 +55,8 @@ class Http:
                 time.sleep(wait)
             self._last = time.monotonic()
             r = self.client.get(url, params=params)
-            if r.status_code == 429 or r.status_code >= 500:
+            overloaded = r.status_code == 422 and "timeout" in r.text.lower()  # Arctic Shift under load
+            if r.status_code == 429 or r.status_code >= 500 or overloaded:
                 time.sleep(float(r.headers.get("retry-after", 2 ** (attempt + 1))))
                 continue
             r.raise_for_status()
@@ -82,30 +84,42 @@ def arctic_shift(http: Http, subreddits: list[str], phrases: list[str], days: in
     base = "https://arctic-shift.photon-reddit.com/api"
     match = phrase_matcher(phrases)
     start = int((datetime.now(timezone.utc) - timedelta(days=days)).timestamp())
+    failures = []
     for sub in subreddits:
         geo = GEO_SUBS.get(sub.lower())
         for kind in ("posts", "comments"):
-            before = int(datetime.now(timezone.utc).timestamp())
-            for _ in range(max_pages):
-                data = http.get(f"{base}/{kind}/search", subreddit=sub, after=start, before=before,
-                                sort="desc", limit=100)
-                if data.get("error"):
-                    raise RuntimeError(f"arctic shift: {data['error']}")
-                items = data.get("data") or []
-                for d in items:
-                    if kind == "posts":
-                        text = f"{d.get('title', '')}\n{d.get('selftext', '')}"
-                        if match.search(text):
-                            yield row("reddit", d["id"], f"https://www.reddit.com{d.get('permalink', '')}",
-                                      d.get("title"), d.get("selftext"), d.get("author"), geo, d.get("created_utc"))
-                    elif match.search(d.get("body") or ""):
-                        post = str(d.get("link_id", "")).removeprefix("t3_")
-                        yield row("reddit", f"c_{d['id']}",
-                                  f"https://www.reddit.com/r/{sub}/comments/{post}/_/{d['id']}/",
-                                  "", d.get("body"), d.get("author"), geo, d.get("created_utc"))
-                if len(items) < 100:
-                    break
-                before = int(items[-1]["created_utc"])  # newest first; next page ends at the oldest item seen
+            try:
+                yield from _arctic_pages(http, base, sub, kind, geo, start, match, max_pages)
+            except Exception as e:  # one subreddit failing must not stop the others
+                failures.append(f"r/{sub} {kind}: {type(e).__name__}: {str(e)[:150]}")
+                print(f"arctic_shift: skipped {failures[-1]}", file=sys.stderr)
+    if failures and len(failures) == 2 * len(subreddits):
+        raise RuntimeError(f"every subreddit failed; first: {failures[0]}")
+
+
+def _arctic_pages(http: Http, base: str, sub: str, kind: str, geo, start: int, match: re.Pattern,
+                  max_pages: int) -> Iterable[dict]:
+    before = int(datetime.now(timezone.utc).timestamp())
+    for _ in range(max_pages):
+        data = http.get(f"{base}/{kind}/search", subreddit=sub, after=start, before=before,
+                        sort="desc", limit=100)
+        if data.get("error"):
+            raise RuntimeError(f"arctic shift: {data['error']}")
+        items = data.get("data") or []
+        for d in items:
+            if kind == "posts":
+                text = f"{d.get('title', '')}\n{d.get('selftext', '')}"
+                if match.search(text):
+                    yield row("reddit", d["id"], f"https://www.reddit.com{d.get('permalink', '')}",
+                              d.get("title"), d.get("selftext"), d.get("author"), geo, d.get("created_utc"))
+            elif match.search(d.get("body") or ""):
+                post = str(d.get("link_id", "")).removeprefix("t3_")
+                yield row("reddit", f"c_{d['id']}",
+                          f"https://www.reddit.com/r/{sub}/comments/{post}/_/{d['id']}/",
+                          "", d.get("body"), d.get("author"), geo, d.get("created_utc"))
+        if len(items) < 100:
+            break
+        before = int(items[-1]["created_utc"])  # newest first; next page ends at the oldest item seen
 
 
 def hn(http: Http, queries: list[str], days: int) -> Iterable[dict]:
@@ -173,8 +187,10 @@ def youtube(http: Http, queries: list[str], days: int, videos_per_query: int = 5
 
 COLLECTORS: dict[str, Callable] = {
     "arctic_shift": lambda http, cfg, days: arctic_shift(http, cfg["subreddits"], cfg["reddit_queries"], days, cfg.get("reddit_max_pages", 30)),
-    "hn": lambda http, cfg, days: hn(http, cfg["queries"], days),
-    "stackexchange": lambda http, cfg, days: stackexchange(http, cfg["stackexchange_sites"], cfg["queries"], days),
+    # Low-volume Q&A sites: their questions stay relevant for months, so they get their own lookback.
+    "hn": lambda http, cfg, days: hn(http, cfg["queries"], max(days, cfg.get("hn_days", 0))),
+    "stackexchange": lambda http, cfg, days: stackexchange(http, cfg["stackexchange_sites"], cfg["queries"],
+                                                           max(days, cfg.get("stackexchange_days", 0))),
     "autocomplete": lambda http, cfg, days: autocomplete(http, cfg["autocomplete_seeds"]),
     "youtube": lambda http, cfg, days: youtube(http, cfg["queries"], days),
 }
