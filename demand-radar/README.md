@@ -101,12 +101,14 @@ Edit `collectors/config.yaml` for subreddits, phrases, topics and seeds. Schedul
 
 | Source | Collector | Cost | Key | Limits and notes |
 |---|---|---|---|---|
-| Reddit via [Arctic Shift](https://github.com/ArthurHeitmann/arctic_shift) | `arctic_shift` | Free | None | Open-source, community-run archive of public Reddit data. Best effort, may lag. Commercial use of Reddit data is subject to Reddit's terms. |
+| Reddit via [Arctic Shift](https://github.com/ArthurHeitmann/arctic_shift) | `arctic_shift` | Free | None | Open-source, community-run archive of public Reddit data. Its full-text search times out, so the collector pages through recent posts and comments (newest first, `reddit_max_pages` × 100 per subreddit) and matches `reddit_queries` locally. Commercial use of Reddit data is subject to Reddit's terms. |
 | Hacker News via Algolia | `hn` | Free | None | About 10,000 requests per hour. Skews toward tech buyers. |
 | Stack Exchange (diy, outdoors, pets, mechanics…) | `stackexchange` | Free | Optional | 300 requests/day without a key, 10,000 with a free key from stackapps.com. Content is CC BY-SA: attribute if you republish. |
 | Google autocomplete | `autocomplete` | Free | None | Unofficial endpoint, no SLA. Shows what people type next. Keep volume low. |
-| Bluesky search | `bluesky` | Free | None | Public search may require login; if `--check` shows an error, it needs an app password (not implemented). |
 | YouTube comments | `youtube` | Free | `YOUTUBE_API_KEY` | Google Cloud project, enable YouTube Data API v3, create an API key. 10,000 units/day; a search costs 100, a comment page 1. |
+
+Bluesky is not included: its public search endpoint returns 403 without a login (checked November 2026).
+It needs a free account and app password.
 
 Each source runs independently, so one failure never stops the others. Requests are spaced (`--delay`,
 default 1 s) and retried on 429/5xx. Usernames are never stored, only a short hash.

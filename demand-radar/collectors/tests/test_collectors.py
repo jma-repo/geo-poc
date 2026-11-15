@@ -18,20 +18,32 @@ def http():
 
 
 @respx.mock
-def test_arctic_shift_posts_and_comments(http):
-    route = respx.get("https://arctic-shift.photon-reddit.com/api/posts/search").mock(return_value=httpx.Response(200, json={
-        "data": [{"id": "abc", "title": "Where can I buy a hail cover?", "selftext": "Parking outside",
-                  "author": "someone", "permalink": "/r/Calgary/comments/abc/x/", "created_utc": 1762000000}]}))
+def test_arctic_shift_pages_and_filters_locally(http):
+    def post(i, title):
+        return {"id": f"p{i}", "title": title, "selftext": "", "author": "someone",
+                "permalink": f"/r/Calgary/comments/p{i}/x/", "created_utc": 1762000000 + i}
+    page1 = [post(i, "Where can I buy a hail cover?" if i == 195 else "Traffic on Deerfoot") for i in range(199, 99, -1)]
+    page2 = [post(50, "Can anyone recommend ice cleats")]
+    posts = respx.get("https://arctic-shift.photon-reddit.com/api/posts/search").mock(
+        side_effect=[httpx.Response(200, json={"data": page1}), httpx.Response(200, json={"data": page2})])
     respx.get("https://arctic-shift.photon-reddit.com/api/comments/search").mock(return_value=httpx.Response(200, json={
-        "data": [{"id": "c1", "body": "I wish there was a cheaper one", "author": "other",
-                  "link_id": "t3_abc", "created_utc": 1762000100}]}))
-    rows = list(sources.arctic_shift(http, ["Calgary"], ["hail"], 7))
-    assert [r["external_id"] for r in rows] == ["abc", "c_c1"]
-    assert rows[0]["url"] == "https://www.reddit.com/r/Calgary/comments/abc/x/"
-    assert rows[1]["url"] == "https://www.reddit.com/r/Calgary/comments/abc/_/c1/"
-    assert all(r["geo_hint"] == "calgary" for r in rows)
-    assert rows[0]["author_hash"] and "someone" not in json.dumps(rows)
-    assert route.calls[0].request.url.params["query"] == "hail"
+        "data": [{"id": "c1", "body": "I wish there was a cheaper one", "author": "other", "link_id": "t3_p5",
+                  "created_utc": 1762000100}, {"id": "c2", "body": "lol", "author": "x", "created_utc": 1762000101}]}))
+    rows = list(sources.arctic_shift(http, ["Calgary"], ["recommend", '"where can I buy"', '"wish there was"'], 7))
+    assert [r["external_id"] for r in rows] == ["p195", "p50", "c_c1"]
+    assert posts.calls[0].request.url.params["sort"] == "desc"
+    assert posts.calls[1].request.url.params["before"] == str(1762000100)  # next page ends at oldest seen
+    assert "query" not in posts.calls[0].request.url.params              # no server-side full-text search
+    assert rows[2]["url"] == "https://www.reddit.com/r/Calgary/comments/p5/_/c1/"
+    assert all(r["geo_hint"] == "calgary" for r in rows) and "someone" not in json.dumps(rows)
+
+
+@respx.mock
+def test_arctic_shift_error_payload_raises(http):
+    respx.get("https://arctic-shift.photon-reddit.com/api/posts/search").mock(
+        return_value=httpx.Response(200, json={"data": None, "error": "Timeout. Maybe slow down a bit"}))
+    with pytest.raises(RuntimeError, match="slow down"):
+        list(sources.arctic_shift(http, ["Calgary"], ["x"], 1))
 
 
 @respx.mock
@@ -65,15 +77,6 @@ def test_autocomplete_expands_a_to_z(http):
 
 
 @respx.mock
-def test_bluesky(http):
-    respx.get("https://public.api.bsky.app/xrpc/app.bsky.feed.searchPosts").mock(return_value=httpx.Response(200, json={
-        "posts": [{"uri": "at://did:plc:x/app.bsky.feed.post/3k", "author": {"handle": "a.bsky.social"},
-                   "record": {"text": "Any good ice cleats?", "createdAt": "2026-11-01T10:00:00.000Z"}}]}))
-    (r,) = sources.bluesky(http, ["ice cleats"], 7)
-    assert r["url"] == "https://bsky.app/profile/a.bsky.social/post/3k"
-
-
-@respx.mock
 def test_youtube_skips_videos_with_comments_disabled(http, monkeypatch):
     monkeypatch.setenv("YOUTUBE_API_KEY", "y")
     api = "https://www.googleapis.com/youtube/v3"
@@ -103,12 +106,12 @@ def test_one_failing_source_does_not_stop_others(http, monkeypatch):
     monkeypatch.delenv("YOUTUBE_API_KEY", raising=False)
     respx.get("https://hn.algolia.com/api/v1/search_by_date").mock(return_value=httpx.Response(200, json={"hits": [
         {"objectID": "1", "title": "t", "author": "a", "created_at_i": 1762000000}]}))
-    respx.get("https://public.api.bsky.app/xrpc/app.bsky.feed.searchPosts").mock(return_value=httpx.Response(403))
-    cfg = {"queries": ["x"]}
-    rows, report = run.collect(["hn", "bluesky", "youtube"], cfg, 7, http)
+    respx.get("https://api.stackexchange.com/2.3/search/advanced").mock(return_value=httpx.Response(400))
+    cfg = {"queries": ["x"], "stackexchange_sites": ["diy"]}
+    rows, report = run.collect(["hn", "stackexchange", "youtube"], cfg, 7, http)
     assert len(rows) == 1
     assert report["hn"] == "ok: 1 rows"
-    assert report["bluesky"].startswith("error: HTTPStatusError")
+    assert report["stackexchange"].startswith("error: HTTPStatusError")
     assert report["youtube"] == "skipped: set YOUTUBE_API_KEY"
 
 

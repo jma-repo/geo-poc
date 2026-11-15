@@ -2,14 +2,17 @@
 
 subreddits: [Calgary, Alberta, PersonalFinanceCanada, BuyCanadian, CampingandHiking, dogs, HomeImprovement, BuyItForLife]
 
-# Phrases that signal someone wants to buy or solve something (Reddit search)
+# Pages of 100 read per subreddit and kind (posts, comments), newest first
+reddit_max_pages: 30
+
+# Phrases that signal someone wants to buy or solve something (matched in Reddit posts and comments)
 reddit_queries:
   - recommend
   - "where can I buy"
   - "looking for"
   - "wish there was"
 
-# Topic queries for Hacker News, Stack Exchange, Bluesky and YouTube
+# Topic queries for Hacker News, Stack Exchange and YouTube
 queries:
   - hail damage car cover
   - winter dog boots salt

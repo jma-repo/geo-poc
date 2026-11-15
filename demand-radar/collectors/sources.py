@@ -3,12 +3,13 @@
     {source, external_id, url, title, body, author_hash, geo_hint, posted_at}
 
 No API key needed: arctic_shift (Reddit archive), hn (Hacker News via Algolia),
-stackexchange, autocomplete (Google suggestions), bluesky.
+stackexchange, autocomplete (Google suggestions).
 Free key needed: youtube (YouTube Data API v3).
 """
 from __future__ import annotations
 
 import hashlib
+import re
 import os
 import string
 import time
@@ -66,23 +67,45 @@ GEO_SUBS = {"calgary": "calgary", "alberta": "alberta", "edmonton": "alberta",
             "canada": "canada", "personalfinancecanada": "canada", "buycanadian": "canada"}
 
 
-def arctic_shift(http: Http, subreddits: list[str], queries: list[str], days: int) -> Iterable[dict]:
-    """Reddit posts and comments via Arctic Shift, an open-source public Reddit archive. No key."""
+def phrase_matcher(phrases: list[str]) -> re.Pattern:
+    return re.compile("|".join(re.escape(p.strip('"')) for p in phrases), re.IGNORECASE)
+
+
+def arctic_shift(http: Http, subreddits: list[str], phrases: list[str], days: int,
+                 max_pages: int = 30) -> Iterable[dict]:
+    """Reddit posts and comments via Arctic Shift, an open-source public Reddit archive. No key.
+
+    Its full-text search times out under load, so this pages through each subreddit's recent posts and
+    comments newest first (cheap listing queries) and keeps those matching a demand phrase locally.
+    max_pages × 100 caps the items read per subreddit and kind; the cap keeps the newest.
+    """
     base = "https://arctic-shift.photon-reddit.com/api"
-    after = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
+    match = phrase_matcher(phrases)
+    start = int((datetime.now(timezone.utc) - timedelta(days=days)).timestamp())
     for sub in subreddits:
         geo = GEO_SUBS.get(sub.lower())
-        for q in queries:
-            for kind, field in (("posts", "query"), ("comments", "body")):
-                data = http.get(f"{base}/{kind}/search", subreddit=sub, **{field: q}, after=after, limit=100)
-                for d in data.get("data") or []:
+        for kind in ("posts", "comments"):
+            before = int(datetime.now(timezone.utc).timestamp())
+            for _ in range(max_pages):
+                data = http.get(f"{base}/{kind}/search", subreddit=sub, after=start, before=before,
+                                sort="desc", limit=100)
+                if data.get("error"):
+                    raise RuntimeError(f"arctic shift: {data['error']}")
+                items = data.get("data") or []
+                for d in items:
                     if kind == "posts":
-                        yield row("reddit", d["id"], f"https://www.reddit.com{d.get('permalink', '')}",
-                                  d.get("title"), d.get("selftext"), d.get("author"), geo, d.get("created_utc"))
-                    else:
+                        text = f"{d.get('title', '')}\n{d.get('selftext', '')}"
+                        if match.search(text):
+                            yield row("reddit", d["id"], f"https://www.reddit.com{d.get('permalink', '')}",
+                                      d.get("title"), d.get("selftext"), d.get("author"), geo, d.get("created_utc"))
+                    elif match.search(d.get("body") or ""):
+                        post = str(d.get("link_id", "")).removeprefix("t3_")
                         yield row("reddit", f"c_{d['id']}",
-                                  f"https://www.reddit.com/r/{sub}/comments/{str(d.get('link_id', '')).removeprefix('t3_')}/_/{d['id']}/",
+                                  f"https://www.reddit.com/r/{sub}/comments/{post}/_/{d['id']}/",
                                   "", d.get("body"), d.get("author"), geo, d.get("created_utc"))
+                if len(items) < 100:
+                    break
+                before = int(items[-1]["created_utc"])  # newest first; next page ends at the oldest item seen
 
 
 def hn(http: Http, queries: list[str], days: int) -> Iterable[dict]:
@@ -125,18 +148,6 @@ def autocomplete(http: Http, seeds: list[str], country: str = "ca") -> Iterable[
                           "canada" if country == "ca" else None, None)
 
 
-def bluesky(http: Http, queries: list[str], days: int) -> Iterable[dict]:
-    """Bluesky public post search. The public AppView may require auth for search; then this yields nothing."""
-    since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    for q in queries:
-        data = http.get("https://public.api.bsky.app/xrpc/app.bsky.feed.searchPosts", q=q, since=since, limit=100)
-        for p in data.get("posts", []):
-            handle = (p.get("author") or {}).get("handle", "")
-            rkey = p.get("uri", "").rsplit("/", 1)[-1]
-            yield row("bluesky", p.get("uri"), f"https://bsky.app/profile/{handle}/post/{rkey}", "",
-                      (p.get("record") or {}).get("text"), handle, None, (p.get("record") or {}).get("createdAt"))
-
-
 def youtube(http: Http, queries: list[str], days: int, videos_per_query: int = 5) -> Iterable[dict]:
     """YouTube comments on recent videos matching each query. Free key, 10,000 quota units/day:
     a search costs 100 units, a comment page 1 unit."""
@@ -161,11 +172,10 @@ def youtube(http: Http, queries: list[str], days: int, videos_per_query: int = 5
 
 
 COLLECTORS: dict[str, Callable] = {
-    "arctic_shift": lambda http, cfg, days: arctic_shift(http, cfg["subreddits"], cfg["reddit_queries"], days),
+    "arctic_shift": lambda http, cfg, days: arctic_shift(http, cfg["subreddits"], cfg["reddit_queries"], days, cfg.get("reddit_max_pages", 30)),
     "hn": lambda http, cfg, days: hn(http, cfg["queries"], days),
     "stackexchange": lambda http, cfg, days: stackexchange(http, cfg["stackexchange_sites"], cfg["queries"], days),
     "autocomplete": lambda http, cfg, days: autocomplete(http, cfg["autocomplete_seeds"]),
-    "bluesky": lambda http, cfg, days: bluesky(http, cfg["queries"], days),
     "youtube": lambda http, cfg, days: youtube(http, cfg["queries"], days),
 }
 NEEDS_KEY = {"youtube": "YOUTUBE_API_KEY"}
