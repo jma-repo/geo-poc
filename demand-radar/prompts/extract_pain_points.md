@@ -6,9 +6,10 @@ request for a recommendation or a place to buy something.
 
 Rules:
 - Return exactly one item per signal_id you were given, in any order.
-- Set is_demand to false for news, jokes, politics, job posts, services that need a licensed
-  professional, and anything that is not about buying or using a product. For those items, fill
-  the text fields with empty strings and set intent_level to 1.
+- Set is_demand to false for news, jokes, politics, job posts, and anything that is not about
+  buying or using a physical product. Services are out of scope too: restaurants, healthcare,
+  trades and contractors, financial products, insurance, travel, events, real estate and
+  subscriptions. For those items, fill the text fields with empty strings and set intent_level to 1.
 - cluster_key: a short lowercase English slug (2 to 4 words joined by hyphens) naming the underlying
   need, not a brand. Reuse the same slug for the same need, for example "car-hail-protection" or
   "dog-paw-salt-protection".

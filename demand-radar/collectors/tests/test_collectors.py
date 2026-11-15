@@ -159,3 +159,20 @@ def test_transport_errors_are_retried(monkeypatch):
         side_effect=[httpx.ReadError("Connection reset by peer"), httpx.Response(200, json={"hits": []})])
     assert list(sources.hn(sources.Http(delay=0), ["x"], 1)) == []
     assert route.call_count == 2
+
+
+def test_daily_writes_dated_file_and_pushes(tmp_path, monkeypatch):
+    from collectors import daily
+    remote, data = tmp_path / "remote.git", tmp_path / "data"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(remote)], check=True)
+    subprocess.run(["git", "clone", "-q", str(remote), str(data)], check=True, capture_output=True)
+    for k, v in (("user.name", "t"), ("user.email", "t@example.com")):
+        subprocess.run(["git", "-C", str(data), "config", k, v], check=True)
+    rows = [sources.row("reddit", "a", "u", "Need boots", "b", "x", "calgary", 1762000000)]
+    monkeypatch.setattr(daily, "collect", lambda names, cfg, days, http: (rows, {n: "ok: 1 rows" for n in names}))
+    daily.main(["--data-dir", str(data), "--commit"])
+    (f,) = (data / "signals").glob("*.jsonl")
+    assert json.loads(f.read_text())["external_id"] == "a"
+    log = subprocess.run(["git", "-C", str(remote), "log", "--oneline", "main"], capture_output=True, text=True).stdout
+    assert "Signals " in log and "1 rows" in log
+    assert (data / "runs.log").read_text().count("ok: 1 rows") == 3  # three daily sources

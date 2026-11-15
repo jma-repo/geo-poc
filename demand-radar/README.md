@@ -113,6 +113,20 @@ It needs a free account and app password.
 Each source runs independently, so one failure never stops the others. Requests are spaced (`--delay`,
 default 1 s) and retried on 429/5xx. Usernames are never stored, only a short hash.
 
+### Daily collection into a private data repository
+
+Collected posts are other people's text, so keep them out of public repositories. Create a private
+repository for data (for example `demand-data`), clone it next to this one, and run once a day:
+
+```bash
+python3 -m collectors.daily --data-dir ../demand-data --commit
+```
+
+Each run writes `signals/YYYY-MM-DD.jsonl` with a two-day lookback (overlap is removed at analysis time),
+appends per-source status to `runs.log`, and commits and pushes. `daily_sources` in `config.yaml` picks the
+sources. Analyze any period by pointing the pipeline at the directory:
+`python3 -m analyze.pipeline ../demand-data/signals --out results/`.
+
 ## Analysis without n8n (DeepSeek or Claude)
 
 `analyze/` runs the same steps as workflows `03` and `04` on collector output, with either model provider.

@@ -48,10 +48,10 @@ def test_deepseek_retries_rate_limits_and_rejects_truncation(ds):
 
 
 def test_load_signals_folds_autocomplete_by_seed(tmp_path):
-    rows = [{"source": "autocomplete", "title": t, "body": "Search suggestion for 'hail cover for'"} for t in
-            ["hail cover for suv", "hail cover for truck", "hail cover for suv"]]
-    rows.append({"source": "reddit", "title": "", "body": "[removed]"})
-    rows.append({"source": "reddit", "title": "Need boots", "body": "x"})
+    rows = [{"source": "autocomplete", "external_id": f"ca:{t}", "title": t,
+             "body": "Search suggestion for 'hail cover for'"} for t in ["hail cover for suv", "hail cover for truck"]]
+    rows.append({"source": "reddit", "external_id": "r1", "title": "", "body": "[removed]"})
+    rows.append({"source": "reddit", "external_id": "r2", "title": "Need boots", "body": "x"})
     f = tmp_path / "s.jsonl"
     f.write_text("".join(json.dumps(r) + "\n" for r in rows))
     sig = pipeline.load_signals(f)
@@ -116,3 +116,12 @@ def test_merge_aggregate_score_end_to_end():
     assert "evidence_urls" not in fake.calls[0][1]  # links stay out of the prompt
     md = pipeline.report(rows, 5, 5, 2, "fake", [])
     assert "| 1 | Hail cover | 82.0 | 3 |" in md
+
+
+def test_load_signals_dedupes_overlapping_days(tmp_path):
+    day1 = {"source": "reddit", "external_id": "a", "title": "Need boots", "body": "old"}
+    day2 = dict(day1, body="edited")
+    f = tmp_path / "s.jsonl"
+    f.write_text(json.dumps(day1) + "\n" + json.dumps(day2) + "\n")
+    (sig,) = pipeline.load_signals(f)
+    assert sig["body"] == "edited"

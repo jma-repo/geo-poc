@@ -32,3 +32,6 @@ autocomplete_seeds:
 # Lookback (days) for low-volume Q&A sources; their questions stay relevant for months
 stackexchange_days: 365
 hn_days: 90
+
+# Sources for the daily run. hn is left out: it returned almost nothing relevant to consumer products.
+daily_sources: [arctic_shift, stackexchange, autocomplete]

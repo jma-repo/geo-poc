@@ -83,6 +83,8 @@ as the canonical one. Return entries ONLY for slugs that change; omit every slug
 
 def load_signals(path: Path) -> list[dict]:
     rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    # Daily runs overlap; keep one copy of each (source, external_id), the latest seen.
+    rows = list({(r["source"], r["external_id"]): r for r in rows}.values())
     signals, suggestions = [], defaultdict(list)
     for r in rows:
         if r["source"] == "autocomplete":
@@ -202,7 +204,7 @@ def report(opps: list[dict], n_signals: int, n_pains: int, n_clusters: int, prov
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("signals", type=Path, nargs="+", help="JSONL files from collectors.run")
+    ap.add_argument("signals", type=Path, nargs="+", help="JSONL files, or directories of them (e.g. demand-data/signals)")
     ap.add_argument("--out", type=Path, default=Path("results"))
     ap.add_argument("--min-mentions", type=int, default=2)
     ap.add_argument("--workers", type=int, default=8)
@@ -212,7 +214,8 @@ def main(argv=None):
     llm = from_env()
     tmp = args.out / "_merged_signals.jsonl"
     args.out.mkdir(parents=True, exist_ok=True)
-    tmp.write_text("".join(f.read_text(encoding="utf-8") for f in args.signals), encoding="utf-8")
+    files = [f for p in args.signals for f in (sorted(p.glob("*.jsonl")) if p.is_dir() else [p])]
+    tmp.write_text("".join(f.read_text(encoding="utf-8") for f in files), encoding="utf-8")
     signals = load_signals(tmp)
     tmp.unlink()
     pains_path = args.out / "pain_points.jsonl"
