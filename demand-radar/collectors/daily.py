@@ -3,7 +3,7 @@
 
   python3 -m collectors.daily --data-dir ../demand-data [--commit]
 
-Writes signals/YYYY-MM-DD.jsonl and appends one line per source to runs.log. With --commit it commits
+Writes signals/YYYY-MM-DD.jsonl (Calgary date; a second run that day gets -HHMM, never overwriting) and appends one line per source to runs.log. With --commit it commits
 and pushes the data repository. A two-day lookback overlaps the previous run so nothing falls between
 runs; duplicates across days are removed at analysis time.
 Collected text belongs to its authors: keep the data repository private.
@@ -15,6 +15,7 @@ import json
 import subprocess
 import time
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 import yaml
@@ -40,7 +41,10 @@ def main(argv=None):
     now = datetime.now(timezone.utc)
     rows, report = collect(sources, cfg, args.days, Http(1.0))
 
-    out = args.data_dir / "signals" / f"{now:%Y-%m-%d}.jsonl"
+    local = now.astimezone(ZoneInfo("America/Edmonton"))
+    out = args.data_dir / "signals" / f"{local:%Y-%m-%d}.jsonl"
+    if out.exists():  # a second run on the same day must not overwrite the first
+        out = out.with_name(f"{local:%Y-%m-%d-%H%M}.jsonl")
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
     with (args.data_dir / "runs.log").open("a", encoding="utf-8") as log:
@@ -55,7 +59,7 @@ def main(argv=None):
         if not git(args.data_dir, "status", "--porcelain"):
             print("nothing to commit")
             return
-        git(args.data_dir, "commit", "-q", "-m", f"Signals {now:%Y-%m-%d}: {len(rows)} rows")
+        git(args.data_dir, "commit", "-q", "-m", f"Signals {out.stem}: {len(rows)} rows")
         for attempt in range(4):
             try:
                 git(args.data_dir, "push", "-q", "origin", "HEAD")

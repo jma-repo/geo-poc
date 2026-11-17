@@ -193,3 +193,14 @@ def test_arctic_shift_second_pass_recovers_and_requests_only_needed_fields(monke
     assert [r["external_id"] for r in rows] == ["p1"]
     assert posts.calls[0].request.url.params["fields"] == sources.POST_FIELDS
     assert "permalink" not in sources.POST_FIELDS  # rejected by the API with 400
+
+
+def test_daily_never_overwrites_same_day_file(tmp_path, monkeypatch):
+    from collectors import daily
+    data = tmp_path / "data"
+    rows = [sources.row("reddit", "a", "u", "t", "b")]
+    monkeypatch.setattr(daily, "collect", lambda names, cfg, days, http: (rows, {}))
+    daily.main(["--data-dir", str(data)])
+    daily.main(["--data-dir", str(data)])
+    names = sorted(f.name for f in (data / "signals").glob("*.jsonl"))
+    assert sorted(len(n) for n in names) == [len("2026-11-17.jsonl"), len("2026-11-17-0238.jsonl")]
